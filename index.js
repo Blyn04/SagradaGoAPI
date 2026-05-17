@@ -31,6 +31,18 @@
 
 
 require("dotenv").config();
+
+// Windows/local DNS often fails Node's querySrv for mongodb+srv (ECONNREFUSED).
+// Public resolvers fix Atlas SRV lookups; override with DNS_SERVERS in .env if needed.
+const dns = require("dns");
+const dnsServers = (process.env.DNS_SERVERS || "8.8.8.8,1.1.1.1")
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
+if (dnsServers.length) {
+  dns.setServers(dnsServers);
+}
+
 const express = require("express");
 const mongoose = require("mongoose");
 const cors = require("cors");
@@ -64,13 +76,6 @@ const data = ["jerome", "bryan", "virgo", "gege"];
 app.get("/api/tryserver", (req, res) => {
   res.json({ message: data });
 });
-
-mongoose.connect(MONGO_URL, {
-  useNewUrlParser: true,
-  useUnifiedTopology: true,
-})
-  .then(() => console.log("Connected to MongoDB Atlas"))
-  .catch(err => console.error("MongoDB connection error:", err));
 
 app.use("/api", allRoutes);
 
@@ -318,11 +323,32 @@ io.on("connection", (socket) => {
 });
 
 const PORT = process.env.PORT || 8080;
-httpServer.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-  console.log(`Socket.IO server ready`);
-  
-  // Start scheduled notifications for today's bookings
-  ScheduledNotificationService.scheduleDailyNotifications();
-});
+
+async function startServer() {
+  if (!MONGO_URL) {
+    console.error("❌ MONGO is not set in .env");
+    process.exit(1);
+  }
+
+  try {
+    await mongoose.connect(MONGO_URL, {
+      serverSelectionTimeoutMS: 15000,
+    });
+    console.log("✅ Connected to MongoDB Atlas");
+  } catch (err) {
+    console.error("❌ MongoDB connection error:", err.message);
+    console.error(
+      "   Tip: On Windows, querySrv ECONNREFUSED is usually DNS. This app sets DNS to 8.8.8.8/1.1.1.1, or use a standard (non-srv) URI from Atlas Connect.",
+    );
+    process.exit(1);
+  }
+
+  httpServer.listen(PORT, () => {
+    console.log(`Server running on port ${PORT}`);
+    console.log(`Socket.IO server ready`);
+    ScheduledNotificationService.scheduleDailyNotifications();
+  });
+}
+
+startServer();
 

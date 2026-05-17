@@ -99,6 +99,10 @@ const UserSchema = new mongoose.Schema(
       type: Boolean,
       default: false
     },
+    must_change_password: {
+      type: Boolean,
+      default: false,
+    },
     archived_at: {
       type: Date,
       default: null

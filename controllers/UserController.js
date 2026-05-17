@@ -1,8 +1,48 @@
 const UserModel = require("../models/User")
 const ArchiveUserModel = require("../models/ArchiveUser")
 const VolunteerModel = require("../models/Volunteer")
+const admin = require("../config/firebaseAdmin")
+const emailService = require("../services/EmailService")
 
 const bcrypt = require("bcrypt");
+const crypto = require("crypto");
+
+function generateTemporaryPassword() {
+  const upper = "ABCDEFGHJKLMNPQRSTUVWXYZ";
+  const lower = "abcdefghjkmnpqrstuvwxyz";
+  const numbers = "23456789";
+  const special = "!@#$%&*";
+  const all = upper + lower + numbers + special;
+
+  let password = "";
+  password += upper[crypto.randomInt(0, upper.length)];
+  password += lower[crypto.randomInt(0, lower.length)];
+  password += numbers[crypto.randomInt(0, numbers.length)];
+  password += special[crypto.randomInt(0, special.length)];
+
+  for (let i = 0; i < 8; i++) {
+    password += all[crypto.randomInt(0, all.length)];
+  }
+
+  return password
+    .split("")
+    .sort(() => crypto.randomInt(-1, 2))
+    .join("");
+}
+
+function validateNewPassword(password) {
+  if (!password) return "Password is required.";
+  if (password.length < 8) return "Password must be at least 8 characters.";
+  if (!/[A-Z]/.test(password))
+    return "Password must contain at least one uppercase letter.";
+  if (!/[a-z]/.test(password))
+    return "Password must contain at least one lowercase letter.";
+  if (!/[0-9]/.test(password))
+    return "Password must contain at least one number.";
+  if (!/[!@#$%^&*(),.?":{}|<>]/.test(password))
+    return "Password must contain at least one special character.";
+  return null;
+}
 
 async function createUser(req, res) {
   try {
@@ -155,6 +195,7 @@ async function findUser(req, res) {
       previous_parish: user.previous_parish,
       residency: user.residency,
       is_active: user.is_active === true, // Return actual boolean value
+      must_change_password: user.must_change_password === true,
       volunteers: userVolunteers || []
     };
     
@@ -248,6 +289,7 @@ async function login(req, res) {
       previous_parish: user.previous_parish,
       residency: user.residency,
       is_active: user.is_active !== false, // Ensure is_active is included
+      must_change_password: user.must_change_password === true,
       volunteers: userVolunteers || []
     };
 
@@ -839,6 +881,247 @@ async function unarchiveUser(req, res) {
   }
 }
 
+async function adminCreateUser(req, res) {
+  let firebaseUid = null;
+
+  try {
+    const {
+      first_name,
+      middle_name,
+      last_name,
+      contact_number,
+      birthday,
+      email,
+      is_priest,
+      previous_parish,
+      residency,
+    } = req.body;
+
+    if (!email || !contact_number || !first_name || !last_name) {
+      return res.status(400).json({
+        message: "First name, last name, email, and contact number are required.",
+      });
+    }
+
+    const normalizedEmail = email.trim().toLowerCase();
+
+    const existingEmail = await UserModel.findOne({
+      email: normalizedEmail,
+      is_deleted: false,
+    });
+
+    if (existingEmail) {
+      return res.status(409).json({
+        message: "Email already exists. Please use a different email.",
+      });
+    }
+
+    const existingContact = await UserModel.findOne({
+      contact_number: contact_number.trim(),
+      is_deleted: false,
+    });
+
+    if (existingContact) {
+      return res.status(409).json({
+        message:
+          "Contact number already exists. Please use a different contact number.",
+      });
+    }
+
+    const temporaryPassword = generateTemporaryPassword();
+    const hashedPassword = await bcrypt.hash(temporaryPassword, 10);
+
+    let residencyValue = undefined;
+    if (residency && (residency === "Permanent" || residency === "Floating")) {
+      residencyValue = residency;
+    }
+
+    const previousParishValue =
+      is_priest && previous_parish ? previous_parish : undefined;
+
+    const firebaseUser = await admin.auth().createUser({
+      email: normalizedEmail,
+      password: temporaryPassword,
+      displayName: `${first_name} ${last_name}`.trim(),
+    });
+
+    firebaseUid = firebaseUser.uid;
+
+    const newUser = new UserModel({
+      first_name,
+      middle_name,
+      last_name,
+      contact_number: contact_number.trim(),
+      birthday,
+      email: normalizedEmail,
+      password: hashedPassword,
+      uid: firebaseUid,
+      is_priest: is_priest || false,
+      previous_parish: previousParishValue,
+      residency: residencyValue,
+      must_change_password: true,
+    });
+
+    await newUser.save();
+
+    const userName = `${first_name} ${last_name}`.trim();
+    const htmlContent = emailService.generateTemporaryPasswordEmail(
+      userName,
+      normalizedEmail,
+      temporaryPassword,
+    );
+
+    const emailResult = await emailService.sendEmail(
+      normalizedEmail,
+      "Your Sagrada Go Account – Temporary Password",
+      htmlContent,
+      null,
+      userName,
+    );
+
+    if (!emailResult.success) {
+      console.warn(
+        "User created but temporary password email failed:",
+        emailResult.error,
+      );
+    }
+
+    res.json({
+      message: emailResult.success
+        ? "User created successfully. A temporary password has been sent to their email."
+        : "User created successfully, but the welcome email could not be sent. Please reset their password manually.",
+      emailSent: emailResult.success,
+      newUser: {
+        uid: newUser.uid,
+        email: newUser.email,
+        first_name: newUser.first_name,
+        middle_name: newUser.middle_name || "",
+        last_name: newUser.last_name,
+        contact_number: newUser.contact_number,
+        birthday: newUser.birthday,
+        is_priest: newUser.is_priest,
+        previous_parish: newUser.previous_parish,
+        residency: newUser.residency,
+        must_change_password: true,
+        volunteers: [],
+      },
+    });
+  } catch (err) {
+    console.error("Error creating user (admin):", err);
+
+    if (firebaseUid) {
+      try {
+        await admin.auth().deleteUser(firebaseUid);
+      } catch (deleteErr) {
+        console.error("Failed to rollback Firebase user:", deleteErr);
+      }
+    }
+
+    if (err.code === 11000) {
+      const field = Object.keys(err.keyPattern || {})[0];
+      if (field === "email") {
+        return res.status(409).json({
+          message: "Email already exists. Please use a different email.",
+        });
+      }
+      if (field === "contact_number") {
+        return res.status(409).json({
+          message:
+            "Contact number already exists. Please use a different contact number.",
+        });
+      }
+    }
+
+    if (err.code === "auth/email-already-exists") {
+      return res.status(409).json({
+        message: "Email already exists. Please use a different email.",
+      });
+    }
+
+    res.status(500).json({ message: "Server error. Please try again later." });
+  }
+}
+
+async function changePassword(req, res) {
+  try {
+    const { uid, currentPassword, newPassword, firebaseToken } = req.body;
+
+    if (!uid || !newPassword) {
+      return res.status(400).json({
+        message: "User ID and new password are required.",
+      });
+    }
+
+    const passwordError = validateNewPassword(newPassword);
+    if (passwordError) {
+      return res.status(400).json({ message: passwordError });
+    }
+
+    if (currentPassword && currentPassword === newPassword) {
+      return res.status(400).json({
+        message: "New password must be different from your current password.",
+      });
+    }
+
+    const user = await UserModel.findOne({ uid, is_deleted: false });
+
+    if (!user) {
+      return res.status(404).json({ message: "User not found." });
+    }
+
+    let isCurrentPasswordValid = false;
+
+    if (firebaseToken) {
+      try {
+        const decodedToken = await admin.auth().verifyIdToken(firebaseToken);
+        if (decodedToken.uid !== uid) {
+          return res.status(401).json({ message: "Unauthorized." });
+        }
+        isCurrentPasswordValid = true;
+      } catch (firebaseError) {
+        console.error("Firebase token verification failed:", firebaseError);
+        if (currentPassword) {
+          isCurrentPasswordValid = await bcrypt.compare(
+            currentPassword,
+            user.password,
+          );
+        } else {
+          return res.status(401).json({ message: "Session expired. Please sign in again." });
+        }
+      }
+    } else if (currentPassword) {
+      isCurrentPasswordValid = await bcrypt.compare(
+        currentPassword,
+        user.password,
+      );
+    } else {
+      return res.status(400).json({
+        message: "Current password or a valid session is required.",
+      });
+    }
+
+    if (!isCurrentPasswordValid) {
+      return res.status(401).json({ message: "Current password is incorrect." });
+    }
+
+    const hashedPassword = await bcrypt.hash(newPassword, 10);
+
+    await admin.auth().updateUser(uid, { password: newPassword });
+
+    user.password = hashedPassword;
+    user.must_change_password = false;
+    await user.save();
+
+    res.status(200).json({
+      message: "Password updated successfully.",
+      must_change_password: false,
+    });
+  } catch (err) {
+    console.error("Error changing password:", err);
+    res.status(500).json({ message: "Server error. Please try again later." });
+  }
+}
+
 async function resetUserPassword(req, res) {
   try {
     const { uid } = req.body;
@@ -885,4 +1168,4 @@ async function resetUserPassword(req, res) {
   }
 }
 
-module.exports = { createUser, findUser, login, getAllUsers, checkEmailExists, checkContactExists, updateUser, addVolunteer, updateUserRole, updateUserStatus, getAllPriests, archiveUser, unarchiveUser, resetUserPassword }
+module.exports = { createUser, adminCreateUser, changePassword, findUser, login, getAllUsers, checkEmailExists, checkContactExists, updateUser, addVolunteer, updateUserRole, updateUserStatus, getAllPriests, archiveUser, unarchiveUser, resetUserPassword }

@@ -31,6 +31,8 @@ router.post("/createWeddingBooking", WeddingController.AddWeddingBookingWeb)
 
 // User routes
 router.post("/createUser", UserController.createUser);
+router.post("/admin/createUser", UserController.adminCreateUser);
+router.post("/changePassword", UserController.changePassword);
 router.post("/findUser", UserController.findUser)
 router.post("/login", UserController.login)
 router.get("/getAllUsers", UserController.getAllUsers)

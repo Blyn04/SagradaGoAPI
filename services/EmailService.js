@@ -385,6 +385,51 @@ class EmailService {
     `;
   }
 
+  generateTemporaryPasswordEmail(userName, email, temporaryPassword) {
+    return `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <style>
+          body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+          .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+          .header { background-color: #2c3e50; color: white; padding: 20px; text-align: center; }
+          .content { padding: 20px; background-color: #f8f9fa; }
+          .credentials { background-color: white; padding: 15px; margin: 15px 0; border-radius: 5px; border-left: 4px solid #3498db; }
+          .password-box { font-family: monospace; font-size: 18px; font-weight: bold; color: #2c3e50; background: #ecf0f1; padding: 10px 15px; border-radius: 4px; display: inline-block; margin: 8px 0; }
+          .warning { background-color: #fff3cd; padding: 12px; border-radius: 5px; margin: 15px 0; }
+          .footer { text-align: center; padding: 20px; color: #666; font-size: 14px; }
+        </style>
+      </head>
+      <body>
+        <div class="container">
+          <div class="header">
+            <h1>Sagrada Familia Parish</h1>
+            <p>Your Account Has Been Created</p>
+          </div>
+          <div class="content">
+            <h2>Dear ${userName},</h2>
+            <p>An administrator has created an account for you on the Sagrada Go platform. Use the credentials below to sign in for the first time.</p>
+            <div class="credentials">
+              <p><strong>Email:</strong> ${email}</p>
+              <p><strong>Temporary Password:</strong></p>
+              <span class="password-box">${temporaryPassword}</span>
+            </div>
+            <div class="warning">
+              <strong>Important:</strong> For your security, you will be required to set a new password immediately after your first login. Do not share this temporary password with anyone.
+            </div>
+            <p>If you did not expect this email, please contact the parish office.</p>
+            <p>God bless!</p>
+          </div>
+          <div class="footer">
+            <p>Sagrada Familia Parish<br>Building faith, serving community.</p>
+          </div>
+        </div>
+      </body>
+      </html>
+    `;
+  }
+
   generateVolunteerRejectionEmail(userName, volunteerDetails, reason = null) {
     const { eventTitle, registration_type } = volunteerDetails;
     const isParticipant = registration_type === "participant";

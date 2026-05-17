@@ -1,3 +1,4 @@
+// VERSION 1
 // const admin = require("firebase-admin");
 
 // // Initialize Firebase Admin SDK
@@ -46,6 +47,7 @@
 // module.exports = admin;
 
 
+// VERSION 2
 const admin = require("firebase-admin");
 
 if (!admin.apps.length) {

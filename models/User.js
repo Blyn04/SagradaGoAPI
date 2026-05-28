@@ -91,6 +91,14 @@ const UserSchema = new mongoose.Schema(
       enum: ["Permanent", "Floating"],
       default: "Floating",
     },
+    start_date: {
+      type: Date,
+      default: null,
+    },
+    end_date: {
+      type: Date,
+      default: null,
+    },
     is_active: { 
       type: Boolean, 
       default: true 

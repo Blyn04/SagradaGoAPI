@@ -7,6 +7,60 @@ const emailService = require("../services/EmailService")
 const bcrypt = require("bcrypt");
 const crypto = require("crypto");
 
+const MIN_USER_AGE_YEARS = 18;
+const MIN_PRIEST_AGE_YEARS = 25;
+
+function computeAgeYears(birthdayDate) {
+  const today = new Date();
+  const birth = new Date(birthdayDate);
+  let age = today.getFullYear() - birth.getFullYear();
+  const m = today.getMonth() - birth.getMonth();
+  if (m < 0 || (m === 0 && today.getDate() < birth.getDate())) {
+    age--;
+  }
+  return age;
+}
+
+function validateBirthdayMinAge(birthday, { isPriest = false } = {}) {
+  if (!birthday) return "Birthday is required.";
+
+  const birth = new Date(birthday);
+  if (Number.isNaN(birth.getTime())) return "Birthday must be a valid date.";
+
+  const today = new Date();
+  if (birth > today) return "Birthday cannot be in the future.";
+
+  const age = computeAgeYears(birth);
+  const minAge = isPriest ? MIN_PRIEST_AGE_YEARS : MIN_USER_AGE_YEARS;
+  if (age < minAge) {
+    return isPriest
+      ? `Priests must be at least ${MIN_PRIEST_AGE_YEARS} years old.`
+      : `Users must be at least ${MIN_USER_AGE_YEARS} years old.`;
+  }
+
+  return null;
+}
+
+function validateFloatingPriestDates(residency, startDate, endDate) {
+  if (residency !== "Floating") return null;
+  if (!startDate) return "Start date is required for floating priests.";
+  if (!endDate) return "End date is required for floating priests.";
+
+  const start = new Date(startDate);
+  const end = new Date(endDate);
+
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
+    return "Start and end dates must be valid dates.";
+  }
+
+  // Compare date-only (ignore time) to avoid timezone edge cases
+  const startDay = new Date(start.getFullYear(), start.getMonth(), start.getDate());
+  const endDay = new Date(end.getFullYear(), end.getMonth(), end.getDate());
+
+  if (endDay < startDay) return "End date must be on or after start date.";
+  return null;
+}
+
 function generateTemporaryPassword() {
   const upper = "ABCDEFGHJKLMNPQRSTUVWXYZ";
   const lower = "abcdefghjkmnpqrstuvwxyz";
@@ -194,6 +248,8 @@ async function findUser(req, res) {
       is_priest: user.is_priest,
       previous_parish: user.previous_parish,
       residency: user.residency,
+      start_date: user.start_date || null,
+      end_date: user.end_date || null,
       is_active: user.is_active === true, // Return actual boolean value
       must_change_password: user.must_change_password === true,
       volunteers: userVolunteers || []
@@ -320,6 +376,8 @@ async function getAllUsers(req, res) {
       is_priest: user.is_priest,
       previous_parish: user.previous_parish,
       residency: user.residency,
+      start_date: user.start_date || null,
+      end_date: user.end_date || null,
       createdAt: user.createdAt,
       updatedAt: user.updatedAt,
       archived_at: user.archived_at || null
@@ -437,6 +495,8 @@ async function updateUser(req, res) {
       is_priest,
       previous_parish,
       residency,
+      start_date,
+      end_date,
     } = req.body;
 
     if (!uid) {
@@ -496,7 +556,15 @@ async function updateUser(req, res) {
     // if (gender !== undefined) user.gender = gender;
     if (contact_number !== undefined) user.contact_number = contact_number.trim();
     // if (civil_status !== undefined) user.civil_status = civil_status;
-    if (birthday !== undefined) user.birthday = birthday;
+    if (birthday !== undefined) {
+      const birthdayError = validateBirthdayMinAge(birthday, {
+        isPriest: is_priest !== undefined ? !!is_priest : !!user.is_priest,
+      });
+      if (birthdayError) {
+        return res.status(400).json({ message: birthdayError });
+      }
+      user.birthday = birthday;
+    }
     if (email !== undefined) user.email = email.trim().toLowerCase();
     if (is_priest !== undefined) user.is_priest = is_priest;
     if (previous_parish !== undefined) user.previous_parish = previous_parish || "";
@@ -514,8 +582,31 @@ async function updateUser(req, res) {
     // If user is not a priest, clear residency and previous_parish
     if (user.is_priest === false) {
       user.residency = undefined;
+      user.start_date = null;
+      user.end_date = null;
       if (!previous_parish) {
         user.previous_parish = undefined;
+      }
+    }
+
+    // Floating priest date rules + persistence
+    if (user.is_priest === true) {
+      if (user.residency === "Floating") {
+        const floatingDatesError = validateFloatingPriestDates(
+          user.residency,
+          start_date !== undefined ? start_date : user.start_date,
+          end_date !== undefined ? end_date : user.end_date,
+        );
+        if (floatingDatesError) {
+          return res.status(400).json({ message: floatingDatesError });
+        }
+
+        if (start_date !== undefined) user.start_date = start_date || null;
+        if (end_date !== undefined) user.end_date = end_date || null;
+      } else {
+        // Permanent priests should not retain floating range
+        user.start_date = null;
+        user.end_date = null;
       }
     }
 
@@ -574,6 +665,8 @@ async function updateUser(req, res) {
       is_priest: user.is_priest,
       previous_parish: user.previous_parish,
       residency: user.residency,
+      start_date: user.start_date,
+      end_date: user.end_date,
       volunteers: userVolunteers || []
     };
 
@@ -895,12 +988,21 @@ async function adminCreateUser(req, res) {
       is_priest,
       previous_parish,
       residency,
+      start_date,
+      end_date,
     } = req.body;
 
     if (!email || !contact_number || !first_name || !last_name) {
       return res.status(400).json({
         message: "First name, last name, email, and contact number are required.",
       });
+    }
+
+    const birthdayError = validateBirthdayMinAge(birthday, {
+      isPriest: !!is_priest,
+    });
+    if (birthdayError) {
+      return res.status(400).json({ message: birthdayError });
     }
 
     const normalizedEmail = email.trim().toLowerCase();
@@ -939,6 +1041,21 @@ async function adminCreateUser(req, res) {
     const previousParishValue =
       is_priest && previous_parish ? previous_parish : undefined;
 
+    if (is_priest) {
+      if (!residencyValue) {
+        return res.status(400).json({ message: "Residency is required for priests." });
+      }
+
+      const floatingDatesError = validateFloatingPriestDates(
+        residencyValue,
+        start_date,
+        end_date,
+      );
+      if (floatingDatesError) {
+        return res.status(400).json({ message: floatingDatesError });
+      }
+    }
+
     const firebaseUser = await admin.auth().createUser({
       email: normalizedEmail,
       password: temporaryPassword,
@@ -959,6 +1076,8 @@ async function adminCreateUser(req, res) {
       is_priest: is_priest || false,
       previous_parish: previousParishValue,
       residency: residencyValue,
+      start_date: residencyValue === "Floating" ? start_date || null : null,
+      end_date: residencyValue === "Floating" ? end_date || null : null,
       must_change_password: true,
     });
 
@@ -1002,6 +1121,8 @@ async function adminCreateUser(req, res) {
         is_priest: newUser.is_priest,
         previous_parish: newUser.previous_parish,
         residency: newUser.residency,
+        start_date: newUser.start_date,
+        end_date: newUser.end_date,
         must_change_password: true,
         volunteers: [],
       },
